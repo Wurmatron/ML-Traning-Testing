@@ -89,11 +89,8 @@ func startupBot(args []string) {
 			var encryptionDir = BaseDir + "/encryption/coinbase_pro.json"
 			_, err := os.Stat(encryptionDir)
 			if !(os.IsNotExist(err)) {
-				coinbase := connectToCoinbase()
-				ch := make(chan MarketData)
-				askCh := make(chan int)
-				go startCoinbaseWSS(coinbase, ch, askCh)
-				go startCoinbaseBot(coinbase, ch, askCh)
+				commandBot := make(chan string)
+				go startCoinbaseBot("LTC-USD", commandBot)
 			} else {
 				fmt.Println("You must first connect to coinbase pro!")
 				fmt.Println("connect coinbase_pro")
