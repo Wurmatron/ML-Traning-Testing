@@ -88,11 +88,15 @@ func startupBot(args []string) {
 	_, err := os.Stat(encryptionDir)
 	if !(os.IsNotExist(err)) {
 		commandBot := make(chan string)
-		market := "DASH-USD"
-		if len(args) == 1 {
-			market = args[0]
-		}
-		go startCoinbaseBot(market, commandBot)
+		go startCoinbaseBot(commandBot, BotSettings{
+			Name:                  "Bot",
+			Market:                "XLM-USD",
+			UpdateTime:            300,
+			MarginSell:            0.01,
+			MarginBuy:             0.01,
+			AmountCalculationType: "SetCurrency",
+			AmountData:            "5",
+		})
 	} else {
 		fmt.Println("You must first connect to coinbase pro!")
 		fmt.Println("connect coinbase_pro")

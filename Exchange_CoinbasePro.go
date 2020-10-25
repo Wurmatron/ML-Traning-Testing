@@ -21,9 +21,6 @@ type Coinbase_Auth struct {
 var auth Coinbase_Auth
 var coinbaseConfig = setupConfig()
 var feePerc = decimal.NewFromFloat(.005)
-var marginSell = decimal.NewFromFloat(.01)
-var marginBuy = decimal.NewFromFloat(.01)
-var purchaseAmount = decimal.NewFromFloat(.1)
 
 func setupConfig() *viper.Viper {
 	coinbaseConfig := viper.New()
@@ -159,21 +156,21 @@ func updateOrderBook(message coinbasepro.Message, buys map[string]coinbasepro.Me
 	}
 }
 
-func startCoinbaseBot(market string, command chan string) {
+func startCoinbaseBot(command chan string, settings BotSettings) {
 	coinbase := connectToCoinbase()
 	ch := make(chan MarketData)
 	askCh := make(chan int)
-	go startCoinbaseWSS(market, ch, askCh, command)
+	go startCoinbaseWSS(settings.Market, ch, askCh, command)
 	askCh <- 1
-	updateBid(coinbase, <-ch)
-	ticker := time.NewTicker(300 * time.Second)
+	updateBid(coinbase, <-ch, settings)
+	ticker := time.NewTicker(300 * time.Second) // TODO
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
 				askCh <- 1
 				data := <-ch
-				updateBid(coinbase, data)
+				updateBid(coinbase, data, settings)
 			case command := <-command:
 				if strings.EqualFold(command, "stop") {
 					ticker.Stop()
@@ -186,22 +183,25 @@ func startCoinbaseBot(market string, command chan string) {
 	}()
 }
 
-func updateBid(coinbase *coinbasepro.Client, data MarketData) {
+func updateBid(coinbase *coinbasepro.Client, data MarketData, settings BotSettings) {
 	var market = data.market
 	var coinName = strings.Split(market, "-")[0]
-	var currencyRound = getMarketDecimal(coinbase, market)
+	var round = getMarketDecimal(coinbase, market)
+	var currencyRound = round[0]
+	var coinRound = round[1]
+	var purchaseAmount = calculatePurchaseAmount(coinbase, settings).Round(int32(coinRound))
 	amountOnCurrentMarket, _ := decimal.NewFromString(getCoinAmount(coinbase, coinName))
 	midMarket := getMidMarket(market, coinbase)
 	lastPurchase := getLastPurchase(coinbase, market, "buy")
-	buyPrice := getBuyPrice(purchaseAmount, midMarket)
+	buyPrice := getBuyPrice(purchaseAmount, midMarket, settings, round).Round(int32(currencyRound))
 	lastPrice, _ := decimal.NewFromString(lastPurchase.Price)
-	sellPrice := getSellPrice(purchaseAmount, midMarket, lastPrice).Round(currencyRound)
+	sellPrice := getSellPrice(purchaseAmount, midMarket, lastPrice, settings, round).Round(int32(currencyRound))
 	if amountOnCurrentMarket.GreaterThan(decimal.NewFromInt(0)) { // Sell current coins
-		placeOrder(coinbase, "sell", market, amountOnCurrentMarket, sellPrice)
+		//placeOrder(coinbase, "sell", market, amountOnCurrentMarket, sellPrice)
 		Println("Selling " + amountOnCurrentMarket.String() + " " + coinName + " for $" + sellPrice.String() + " ($" + midMarket.String() + ")")
 	} else { // Buy Coins
-		placeOrder(coinbase, "buy", market, purchaseAmount, buyPrice)
-		Println("Buying " + purchaseAmount.String() + coinName + " for $" + buyPrice.String() + " ($" + midMarket.String() + ")")
+		//placeOrder(coinbase, "buy", market, purchaseAmount, buyPrice)
+		Println("Buying " + purchaseAmount.String() + coinName + " for $" + buyPrice.String() + " (" + midMarket.String() + ")")
 	}
 }
 
@@ -258,17 +258,15 @@ func getLastPurchase(coinbase *coinbasepro.Client, market string, t string) coin
 	return coinbasepro.Fill{}
 }
 
-func getSellPrice(amount decimal.Decimal, midPrice decimal.Decimal, buyPrice decimal.Decimal) decimal.Decimal {
+func getSellPrice(amount decimal.Decimal, midPrice decimal.Decimal, buyPrice decimal.Decimal, bot BotSettings, rounding [2]int) decimal.Decimal {
 	if buyPrice.GreaterThan(midPrice) { // Refuse to lose
 		midPrice = buyPrice
 	}
-	margin := midPrice.Mul(amount).Mul(marginSell)
-	return midPrice.Add(midPrice.Mul(amount).Mul(feePerc.Mul(decimal.NewFromInt(2))).Round(2)).Add(margin)
+	return midPrice.Add(midPrice.Mul(feePerc).Add(midPrice.Mul(decimal.NewFromFloat(bot.MarginSell)))).Mul(amount)
 }
 
-func getBuyPrice(amount decimal.Decimal, midPrice decimal.Decimal) decimal.Decimal {
-	margin := midPrice.Mul(amount).Mul(marginBuy)
-	return midPrice.Sub(midPrice.Mul(amount).Mul(feePerc).Round(2)).Sub(margin)
+func getBuyPrice(amount decimal.Decimal, midPrice decimal.Decimal, bot BotSettings, rounding [2]int) decimal.Decimal {
+	return midPrice.Sub(midPrice.Mul(feePerc).Add(midPrice.Mul(decimal.NewFromFloat(bot.MarginSell)))).Mul(amount)
 }
 
 func getCoinAmount(coinbase *coinbasepro.Client, coin string) string {
@@ -319,16 +317,50 @@ func placeOrder(coinbase *coinbasepro.Client, t string, market string, amount de
 	}
 }
 
-func getMarketDecimal(coinbase *coinbasepro.Client, market string) int32 {
+func getMarketDecimal(coinbase *coinbasepro.Client, market string) [2]int {
 	products, _ := coinbase.GetProducts()
 	for _, product := range products {
 		if strings.EqualFold(product.ID, market) {
-			round := strings.Split(product.QuoteIncrement, "1")
-			round[0] = strings.Replace(round[0], ".", "", -1)
-			return int32(len(round[0]))
+			return [2]int{strings.Index(product.QuoteIncrement, "1"), strings.Index(product.BaseMinSize, "1")}
 		}
 	}
-	return 2
+	return [2]int{0, 0}
+}
+
+func calculatePurchaseAmount(coinbase *coinbasepro.Client, settings BotSettings) decimal.Decimal {
+	value, _ := decimal.NewFromString(settings.AmountData)
+	if strings.EqualFold(settings.AmountCalculationType, "SetAmount") {
+		return value
+	} else if strings.EqualFold(settings.AmountCalculationType, "SetCurrency") {
+		midPrice := getMidMarket(settings.Market, coinbase)
+		return value.Div(midPrice)
+	} else if strings.EqualFold(settings.AmountCalculationType, "PercCurrency") {
+		total := getTotalMoney(coinbase)
+		perc := total.Div(value)
+		midPrice := getMidMarket(settings.Market, coinbase)
+		return perc.Div(midPrice)
+	}
+	return decimal.NewFromFloat(0)
+}
+
+func getTotalMoney(coinbase *coinbasepro.Client) decimal.Decimal {
+	accounts, err := coinbase.GetAccounts()
+	if err != nil {
+		Println("Failed to connect, Invalid Token's")
+	} else {
+		for _, a := range accounts {
+			bal, err := decimal.NewFromString(a.Balance)
+			if err != nil {
+				panic(err)
+			}
+			if bal.GreaterThan(decimal.NewFromInt(0)) {
+				if a.ID == "USD" {
+					return bal
+				}
+			}
+		}
+	}
+	return decimal.NewFromFloat(0)
 }
 
 type MarketData struct {
