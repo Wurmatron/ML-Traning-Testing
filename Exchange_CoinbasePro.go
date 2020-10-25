@@ -189,18 +189,19 @@ func startCoinbaseBot(market string, command chan string) {
 func updateBid(coinbase *coinbasepro.Client, data MarketData) {
 	var market = data.market
 	var coinName = strings.Split(market, "-")[0]
+	var currencyRound = getMarketDecimal(coinbase, market)
 	amountOnCurrentMarket, _ := decimal.NewFromString(getCoinAmount(coinbase, coinName))
 	midMarket := getMidMarket(market, coinbase)
 	lastPurchase := getLastPurchase(coinbase, market, "buy")
 	buyPrice := getBuyPrice(purchaseAmount, midMarket)
 	lastPrice, _ := decimal.NewFromString(lastPurchase.Price)
-	sellPrice := getSellPrice(purchaseAmount, midMarket, lastPrice).Round(2) // TODO Dynamic Round according to coin
-	if amountOnCurrentMarket.GreaterThan(decimal.NewFromInt(0)) {            // Sell current coins
+	sellPrice := getSellPrice(purchaseAmount, midMarket, lastPrice).Round(currencyRound)
+	if amountOnCurrentMarket.GreaterThan(decimal.NewFromInt(0)) { // Sell current coins
 		placeOrder(coinbase, "sell", market, amountOnCurrentMarket, sellPrice)
-		Println("Selling " + amountOnCurrentMarket.String() + coinName + " for $" + sellPrice.String())
+		Println("Selling " + amountOnCurrentMarket.String() + " " + coinName + " for $" + sellPrice.String() + " ($" + midMarket.String() + ")")
 	} else { // Buy Coins
 		placeOrder(coinbase, "buy", market, purchaseAmount, buyPrice)
-		Println("Buying " + purchaseAmount.String() + coinName + " for $" + buyPrice.String())
+		Println("Buying " + purchaseAmount.String() + coinName + " for $" + buyPrice.String() + " ($" + midMarket.String() + ")")
 	}
 }
 
@@ -262,7 +263,7 @@ func getSellPrice(amount decimal.Decimal, midPrice decimal.Decimal, buyPrice dec
 		midPrice = buyPrice
 	}
 	margin := midPrice.Mul(amount).Mul(marginSell)
-	return midPrice.Add(midPrice.Mul(amount).Mul(feePerc).Round(2)).Add(margin)
+	return midPrice.Add(midPrice.Mul(amount).Mul(feePerc.Mul(decimal.NewFromInt(2))).Round(2)).Add(margin)
 }
 
 func getBuyPrice(amount decimal.Decimal, midPrice decimal.Decimal) decimal.Decimal {
@@ -314,8 +315,20 @@ func placeOrder(coinbase *coinbasepro.Client, t string, market string, amount de
 		Println(err)
 		return
 	} else {
-		Println("Placed Order for " + market + " for " + amount.String() + " @ $" + price.String())
+		Println("Placed " + t + "Order for " + market + " for " + amount.String() + " @ $" + price.String())
 	}
+}
+
+func getMarketDecimal(coinbase *coinbasepro.Client, market string) int32 {
+	products, _ := coinbase.GetProducts()
+	for _, product := range products {
+		if strings.EqualFold(product.ID, market) {
+			round := strings.Split(product.QuoteIncrement, "1")
+			round[0] = strings.Replace(round[0], ".", "", -1)
+			return int32(len(round[0]))
+		}
+	}
+	return 2
 }
 
 type MarketData struct {
