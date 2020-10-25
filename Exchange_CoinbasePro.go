@@ -21,7 +21,8 @@ type Coinbase_Auth struct {
 var auth Coinbase_Auth
 var coinbaseConfig = setupConfig()
 var feePerc = decimal.NewFromFloat(.005)
-var margin = decimal.NewFromFloat(.01)
+var marginSell = decimal.NewFromFloat(.01)
+var marginBuy = decimal.NewFromFloat(.01)
 var purchaseAmount = decimal.NewFromFloat(.1)
 
 func setupConfig() *viper.Viper {
@@ -163,7 +164,9 @@ func startCoinbaseBot(market string, command chan string) {
 	ch := make(chan MarketData)
 	askCh := make(chan int)
 	go startCoinbaseWSS(market, ch, askCh, command)
-	ticker := time.NewTicker(5 * time.Second)
+	askCh <- 1
+	updateBid(coinbase, <-ch)
+	ticker := time.NewTicker(300 * time.Second)
 	go func() {
 		for {
 			select {
@@ -196,7 +199,7 @@ func updateBid(coinbase *coinbasepro.Client, data MarketData) {
 		placeOrder(coinbase, "sell", market, amountOnCurrentMarket, sellPrice)
 		Println("Selling " + amountOnCurrentMarket.String() + coinName + " for $" + sellPrice.String())
 	} else { // Buy Coins
-		placeOrder(coinbase, "buy", market, purchaseAmount, sellPrice)
+		placeOrder(coinbase, "buy", market, purchaseAmount, buyPrice)
 		Println("Buying " + purchaseAmount.String() + coinName + " for $" + buyPrice.String())
 	}
 }
@@ -258,13 +261,13 @@ func getSellPrice(amount decimal.Decimal, midPrice decimal.Decimal, buyPrice dec
 	if buyPrice.GreaterThan(midPrice) { // Refuse to lose
 		midPrice = buyPrice
 	}
-	margin := midPrice.Mul(amount).Mul(margin)
+	margin := midPrice.Mul(amount).Mul(marginSell)
 	return midPrice.Add(midPrice.Mul(amount).Mul(feePerc).Round(2)).Add(margin)
 }
 
 func getBuyPrice(amount decimal.Decimal, midPrice decimal.Decimal) decimal.Decimal {
-	margin := midPrice.Mul(amount).Mul(margin)
-	return midPrice.Sub(midPrice.Mul(amount).Mul(feePerc).Round(2)).Add(margin)
+	margin := midPrice.Mul(amount).Mul(marginBuy)
+	return midPrice.Sub(midPrice.Mul(amount).Mul(feePerc).Round(2)).Sub(margin)
 }
 
 func getCoinAmount(coinbase *coinbasepro.Client, coin string) string {

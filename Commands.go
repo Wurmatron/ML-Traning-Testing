@@ -58,7 +58,7 @@ func exchange(args []string) {
 	if len(args) == 2 {
 		if strings.EqualFold(args[0], "coinbase_pro") {
 			coinbase := connectToCoinbase()
-			if strings.EqualFold(args[0], "balance") {
+			if strings.EqualFold(args[1], "balance") {
 				accounts, err := coinbase.GetAccounts()
 				if err != nil {
 					fmt.Println("Failed to connect, Invalid Token's")
@@ -84,21 +84,17 @@ func exchange(args []string) {
 }
 
 func startupBot(args []string) {
-	if len(args) == 1 {
-		if strings.EqualFold(args[0], "coinbase_pro") {
-			var encryptionDir = BaseDir + "/encryption/coinbase_pro.json"
-			_, err := os.Stat(encryptionDir)
-			if !(os.IsNotExist(err)) {
-				commandBot := make(chan string)
-				go startCoinbaseBot("LTC-USD", commandBot)
-			} else {
-				fmt.Println("You must first connect to coinbase pro!")
-				fmt.Println("connect coinbase_pro")
-			}
-		} else {
-			fmt.Println("Invalid Exchange!")
+	var encryptionDir = BaseDir + "/encryption/coinbase_pro.json"
+	_, err := os.Stat(encryptionDir)
+	if !(os.IsNotExist(err)) {
+		commandBot := make(chan string)
+		market := "DASH-USD"
+		if len(args) == 1 {
+			market = args[0]
 		}
+		go startCoinbaseBot(market, commandBot)
 	} else {
-		fmt.Println("start <exchange>")
+		fmt.Println("You must first connect to coinbase pro!")
+		fmt.Println("connect coinbase_pro")
 	}
 }
