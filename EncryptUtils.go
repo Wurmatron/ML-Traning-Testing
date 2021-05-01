@@ -7,16 +7,19 @@ import (
 	"fmt"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/scrypt"
+	"golang.org/x/term"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	"syscall"
 )
 
 var encryptionPass string
 
-// https://bruinsslot.jp/post/golang-crypto/
+// Encrypt https://bruinsslot.jp/post/golang-crypto/
 // Jan Pieter
+// Encrypt the given password based on its key
 func Encrypt(key, data []byte) ([]byte, error) {
 	key, salt, err := DeriveKey(key, nil)
 	if err != nil {
@@ -45,8 +48,9 @@ func Encrypt(key, data []byte) ([]byte, error) {
 	return ciphertext, nil
 }
 
-// https://bruinsslot.jp/post/golang-crypto/
+// Decrypt https://bruinsslot.jp/post/golang-crypto/
 // Jan Pieter
+// Decrypt the given password with the key
 func Decrypt(key, data []byte) ([]byte, error) {
 	salt, data := data[len(data)-32:], data[:len(data)-32]
 
@@ -75,8 +79,9 @@ func Decrypt(key, data []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// https://bruinsslot.jp/post/golang-crypto/
+// DeriveKey https://bruinsslot.jp/post/golang-crypto/
 // Jan Pieter
+// Generate the key based on the password and salt
 func DeriveKey(password, salt []byte) ([]byte, []byte, error) {
 	if salt == nil {
 		salt = make([]byte, 32)
@@ -92,6 +97,7 @@ func DeriveKey(password, salt []byte) ([]byte, []byte, error) {
 	return key, salt, nil
 }
 
+// Load the encrypted data based on the input user password,
 func setupOrLoadEncryptionKey() {
 	var encryptionDir = BaseDir + "/encryption/"
 	_, err := os.Stat(encryptionDir)
@@ -129,18 +135,27 @@ func setupOrLoadEncryptionKey() {
 	}
 }
 
+// Get a password from the user, hidden if possible
 func readPassword(prompt string) string {
 	fmt.Print(prompt)
 	var line string
-	fmt.Scanln(&line)
-	return line
+	bytepw, _ := term.ReadPassword(int(syscall.Stdin))
+	line = string(bytepw)
+	for {
+		if len(line) > 0 {
+			return line
+		}
+		fmt.Scanln(&line)
+	}
 }
 
+// HashString Hash the input string
 func HashString(data string) string {
 	hash, _ := bcrypt.GenerateFromPassword([]byte(data), bcrypt.DefaultCost)
 	return string(hash)
 }
 
+// WriteToFile Write a given string into the provided filename
 func WriteToFile(filename string, data string) error {
 	file, err := os.Create(filename)
 	if err != nil {
@@ -155,6 +170,7 @@ func WriteToFile(filename string, data string) error {
 	return file.Sync()
 }
 
+// ReadFile Read the given data from the provided filename, empty if u
 func ReadFile(filename string) string {
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {

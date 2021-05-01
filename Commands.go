@@ -10,6 +10,7 @@ import (
 
 var commands map[string]func([]string)
 
+// Setup the possible command line commands
 func addCommands() {
 	commands = make(map[string]func([]string))
 	commands["connect"] = connect
@@ -17,10 +18,12 @@ func addCommands() {
 	commands["start"] = startupBot
 }
 
+// Remove the provided amount of 's' from the begging of a string array
 func remove(slice []string, s int) []string {
 	return append(slice[:s], slice[s+1:]...)
 }
 
+// Run a command
 func runCommands(command string, wg sync.WaitGroup) {
 	command = strings.Replace(command, "\n", "", -1)
 	args := strings.Split(command, " ")
@@ -40,6 +43,7 @@ func runCommands(command string, wg sync.WaitGroup) {
 	}
 }
 
+// Run the prefixed 'connect' command
 func connect(args []string) {
 	if len(args) == 1 {
 		if strings.EqualFold(args[0], "list") {
@@ -54,6 +58,7 @@ func connect(args []string) {
 	}
 }
 
+// Run the prefixed 'exchange' command
 func exchange(args []string) {
 	if len(args) == 2 {
 		if strings.EqualFold(args[0], "coinbase_pro") {
@@ -83,6 +88,8 @@ func exchange(args []string) {
 	}
 }
 
+// Startup the bot running on a single provided market
+// TODO Run multiple bots based on its name, via start <name>
 func startupBot(args []string) {
 	var encryptionDir = BaseDir + "/encryption/coinbase_pro.json"
 	_, err := os.Stat(encryptionDir)
