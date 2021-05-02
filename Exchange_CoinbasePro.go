@@ -1,13 +1,16 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/hex"
 	. "fmt"
 	ws "github.com/gorilla/websocket"
 	"github.com/preichenberger/go-coinbasepro/v2"
+	cb "github.com/preichenberger/go-coinbasepro/v2"
 	"github.com/shopspring/decimal"
 	"github.com/spf13/viper"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -94,13 +97,13 @@ func startCoinbaseWSS(market string, ch chan MarketData, ask chan int, command c
 	subscribe := coinbasepro.Message{
 		Type: "subscribe",
 		Channels: []coinbasepro.MessageChannel{
-			coinbasepro.MessageChannel{
+			{
 				Name: "heartbeat",
 				ProductIds: []string{
 					market,
 				},
 			},
-			coinbasepro.MessageChannel{
+			{
 				Name: "full",
 				ProductIds: []string{
 					market,
@@ -158,29 +161,30 @@ func updateOrderBook(message coinbasepro.Message, buys map[string]coinbasepro.Me
 
 func startCoinbaseBot(command chan string, settings BotSettings) {
 	coinbase := connectToCoinbase()
-	ch := make(chan MarketData)
-	askCh := make(chan int)
-	go startCoinbaseWSS(settings.Market, ch, askCh, command)
-	askCh <- 1
-	updateBid(coinbase, <-ch, settings)
-	ticker := time.NewTicker(300 * time.Second) // TODO
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				askCh <- 1
-				data := <-ch
-				updateBid(coinbase, data, settings)
-			case command := <-command:
-				if strings.EqualFold(command, "stop") {
-					ticker.Stop()
-					close(ch)
-					close(askCh)
-					return
-				}
-			}
-		}
-	}()
+	updateMarketHistory(coinbase)
+	//ch := make(chan MarketData)
+	//askCh := make(chan int)
+	//go startCoinbaseWSS(settings.Market, ch, askCh, command)
+	//askCh <- 1
+	//updateBid(coinbase, <-ch, settings)
+	//ticker := time.NewTicker(300 * time.Second) // TODO
+	//go func() {
+	//	for {
+	//		select {
+	//		case <-ticker.C:
+	//			askCh <- 1
+	//			data := <-ch
+	//			updateBid(coinbase, data, settings)
+	//		case command := <-command:
+	//			if strings.EqualFold(command, "stop") {
+	//				ticker.Stop()
+	//				close(ch)
+	//				close(askCh)
+	//				return
+	//			}
+	//		}
+	//	}
+	//}()
 }
 
 func updateBid(coinbase *coinbasepro.Client, data MarketData, settings BotSettings) {
@@ -354,4 +358,58 @@ type MarketData struct {
 	market string
 	buys   map[string]coinbasepro.Message
 	sells  map[string]coinbasepro.Message
+}
+
+func updateMarketHistory(coinbase *coinbasepro.Client) {
+	Println("Updating Market History")
+	sql := ConnectDB()
+	startTimestmap := int64(1420088400) // Jan 1, 2015
+	// Get Latest timestamp and update from there
+	query, err := sql.Query("SELECT MAX(timestamp) FROM market_data")
+	if err != nil {
+		println(err.Error())
+	}
+	if query != nil && query.Next() {
+		err = query.Scan(&startTimestmap)
+		if err != nil {
+			println(err.Error())
+		}
+	}
+	timeRemaining := time.Now().Unix() - startTimestmap
+	Println("Currently " + strconv.Itoa(int(timeRemaining)/60) + " entries missing!")
+	updateMarketData("BTC-USD", coinbase, startTimestmap, sql)
+}
+
+func updateMarketData(market string, coinbase *coinbasepro.Client, timestamp int64, sql *sql.DB) {
+	increment := int64(300 * 60) // 300 entires in 1m increments
+	for {
+		rates := cb.GetHistoricRatesParams{
+			Start:       time.Unix(timestamp, 0),
+			End:         time.Unix(timestamp+increment, 0),
+			Granularity: 60,
+		}
+		history, err := coinbase.GetHistoricRates(market, rates)
+		if err != nil {
+			println(err.Error())
+		}
+		for _, timeHistory := range history {
+			_, err := sql.Exec("INSERT INTO market_data (exchange, market, timestamp, lowest_price, highest_price, first_trade_price, last_trade_price, volume) VALUES " +
+				"('" + "coinbase_pro" + "', '" + market + "', '" + strconv.Itoa(int(timeHistory.Time.Unix())) + "', '" + strconv.FormatFloat(timeHistory.Low, 'g', 8, 64) + "', '" + strconv.FormatFloat(timeHistory.High, 'g', 8, 64) +
+				"', '" + strconv.FormatFloat(timeHistory.Open, 'g', 8, 64) + "', '" + strconv.FormatFloat(timeHistory.Close, 'g', 8, 64) + "', '" + strconv.FormatFloat(timeHistory.Volume, 'g', 8, 64) + "')")
+			if err != nil {
+				println(err.Error())
+			}
+		}
+		if len(history) > 0 {
+			Println("Added " + strconv.Itoa(len(history)) + " Entries to DB, Currently at " + history[0].Time.Format("2006-01-02 15:04:05"))
+		} else {
+			Println("Looking for when the history starts " + time.Unix(timestamp, 0).Format("2006-01-02 15:04:05"))
+		}
+		if timestamp >= time.Now().Unix() {
+			break
+		}
+		timestamp = timestamp + increment
+		time.Sleep(350 * time.Millisecond) // 1.08s for 3, below 1 per sec, as per ratelimit
+	}
+	Println("Historical Data Updated")
 }
