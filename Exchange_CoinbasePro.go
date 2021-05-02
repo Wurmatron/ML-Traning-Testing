@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	. "fmt"
-	ws "github.com/gorilla/websocket"
 	"github.com/preichenberger/go-coinbasepro/v2"
 	cb "github.com/preichenberger/go-coinbasepro/v2"
 	"github.com/shopspring/decimal"
@@ -88,125 +87,11 @@ func connectToCoinbase() *coinbasepro.Client {
 	return coinbase
 }
 
-func startCoinbaseWSS(market string, ch chan MarketData, ask chan int, command chan string) {
-	var wsDialer ws.Dialer
-	wsConn, _, err := wsDialer.Dial("wss://ws-feed.pro.coinbase.com", nil)
-	if err != nil {
-		Println(err.Error())
-	}
-	subscribe := coinbasepro.Message{
-		Type: "subscribe",
-		Channels: []coinbasepro.MessageChannel{
-			{
-				Name: "heartbeat",
-				ProductIds: []string{
-					market,
-				},
-			},
-			{
-				Name: "full",
-				ProductIds: []string{
-					market,
-				},
-			},
-		},
-	}
-	if err := wsConn.WriteJSON(subscribe); err != nil {
-		Println(err.Error())
-	}
-	buys := make(map[string]coinbasepro.Message)
-	sells := make(map[string]coinbasepro.Message)
-	for true {
-		select {
-		case <-ask: // Send updated data
-			ch <- MarketData{
-				market: market,
-				buys:   buys,
-				sells:  sells,
-			}
-		case command := <-command:
-			if strings.EqualFold(command, "stop") {
-				return
-			}
-		default:
-			message := coinbasepro.Message{}
-			if err := wsConn.ReadJSON(&message); err != nil {
-				Println(err.Error())
-				break
-			}
-			if message.Type == "open" {
-				updateOrderBook(message, buys, sells)
-			} else if message.Type == "done" {
-				updateOrderBook(message, buys, sells)
-			}
-		}
-	}
-}
-
-func updateOrderBook(message coinbasepro.Message, buys map[string]coinbasepro.Message, sells map[string]coinbasepro.Message) {
-	if message.Type == "open" {
-		if message.Side == "buy" {
-			buys[message.OrderID] = message
-		} else if message.Side == "sell" {
-			sells[message.OrderID] = message
-		}
-	} else if message.Type == "done" {
-		if message.Side == "buy" {
-			delete(buys, message.OrderID)
-		} else if message.Side == "sell" {
-			delete(sells, message.OrderID)
-		}
-	}
-}
-
 func startCoinbaseBot(command chan string, settings BotSettings) {
 	coinbase := connectToCoinbase()
-	updateMarketHistory(coinbase)
-	//ch := make(chan MarketData)
-	//askCh := make(chan int)
-	//go startCoinbaseWSS(settings.Market, ch, askCh, command)
-	//askCh <- 1
-	//updateBid(coinbase, <-ch, settings)
-	//ticker := time.NewTicker(300 * time.Second) // TODO
-	//go func() {
-	//	for {
-	//		select {
-	//		case <-ticker.C:
-	//			askCh <- 1
-	//			data := <-ch
-	//			updateBid(coinbase, data, settings)
-	//		case command := <-command:
-	//			if strings.EqualFold(command, "stop") {
-	//				ticker.Stop()
-	//				close(ch)
-	//				close(askCh)
-	//				return
-	//			}
-	//		}
-	//	}
-	//}()
-}
-
-func updateBid(coinbase *coinbasepro.Client, data MarketData, settings BotSettings) {
-	var market = data.market
-	var coinName = strings.Split(market, "-")[0]
-	var round = GetMarketDecimal(coinbase, market)
-	var currencyRound = round[0]
-	var coinRound = round[1]
-	var purchaseAmount = calculatePurchaseAmount(coinbase, settings).Round(int32(coinRound))
-	amountOnCurrentMarket, _ := decimal.NewFromString(GetTotalMoney(coinbase, coinName).String())
-	midMarket := getMidMarket(market, coinbase)
-	lastPurchase := getLastPurchase(coinbase, market, "buy")
-	buyPrice := getBuyPrice(purchaseAmount, midMarket, settings, round).Round(int32(currencyRound))
-	lastPrice, _ := decimal.NewFromString(lastPurchase.Price)
-	sellPrice := getSellPrice(purchaseAmount, midMarket, lastPrice, settings, round).Round(int32(currencyRound))
-	if amountOnCurrentMarket.GreaterThan(decimal.NewFromInt(0)) { // Sell current coins
-		//placeOrder(coinbase, "sell", market, amountOnCurrentMarket, sellPrice)
-		Println("Selling " + amountOnCurrentMarket.String() + " " + coinName + " for $" + sellPrice.String() + " ($" + midMarket.String() + ")")
-	} else { // Buy Coins
-		//placeOrder(coinbase, "buy", market, purchaseAmount, buyPrice)
-		Println("Buying " + purchaseAmount.String() + coinName + " for $" + buyPrice.String() + " (" + midMarket.String() + ")")
-	}
+	updateMarketHistory(coinbase, settings)
+	Println("Bot Initalization Complete")
+	go run(settings)
 }
 
 func getMidMarket(market string, coinbase *coinbasepro.Client) decimal.Decimal {
@@ -262,17 +147,6 @@ func getLastPurchase(coinbase *coinbasepro.Client, market string, t string) coin
 	return coinbasepro.Fill{}
 }
 
-func getSellPrice(amount decimal.Decimal, midPrice decimal.Decimal, buyPrice decimal.Decimal, bot BotSettings, rounding [2]int) decimal.Decimal {
-	if buyPrice.GreaterThan(midPrice) { // Refuse to lose
-		midPrice = buyPrice
-	}
-	return midPrice.Add(midPrice.Mul(feePerc).Add(midPrice.Mul(decimal.NewFromFloat(bot.MarginSell)))).Mul(amount)
-}
-
-func getBuyPrice(amount decimal.Decimal, midPrice decimal.Decimal, bot BotSettings, rounding [2]int) decimal.Decimal {
-	return midPrice.Sub(midPrice.Mul(feePerc).Add(midPrice.Mul(decimal.NewFromFloat(bot.MarginSell)))).Mul(amount)
-}
-
 func PlaceOrder(coinbase *coinbasepro.Client, t string, market string, amount decimal.Decimal, price decimal.Decimal) {
 	for _, o := range getActiveOrders(coinbase) { // Check for current orders matching this one
 		if o.ProductID == market {
@@ -318,22 +192,6 @@ func GetMarketDecimal(coinbase *coinbasepro.Client, market string) [2]int {
 	return [2]int{0, 0}
 }
 
-func calculatePurchaseAmount(coinbase *coinbasepro.Client, settings BotSettings) decimal.Decimal {
-	value, _ := decimal.NewFromString(settings.AmountData)
-	if strings.EqualFold(settings.AmountCalculationType, "SetAmount") {
-		return value
-	} else if strings.EqualFold(settings.AmountCalculationType, "SetCurrency") {
-		midPrice := getMidMarket(settings.Market, coinbase)
-		return value.Div(midPrice)
-	} else if strings.EqualFold(settings.AmountCalculationType, "PercCurrency") {
-		total := GetTotalMoney(coinbase, "USD")
-		perc := total.Div(value)
-		midPrice := getMidMarket(settings.Market, coinbase)
-		return perc.Div(midPrice)
-	}
-	return decimal.NewFromFloat(0)
-}
-
 func GetTotalMoney(coinbase *coinbasepro.Client, currencyType string) decimal.Decimal {
 	accounts, err := coinbase.GetAccounts()
 	if err != nil {
@@ -360,12 +218,12 @@ type MarketData struct {
 	sells  map[string]coinbasepro.Message
 }
 
-func updateMarketHistory(coinbase *coinbasepro.Client) {
+func updateMarketHistory(coinbase *coinbasepro.Client, settings BotSettings) {
 	Println("Updating Market History")
 	sql := ConnectDB()
 	startTimestmap := int64(1420088400) // Jan 1, 2015
 	// Get Latest timestamp and update from there
-	query, err := sql.Query("SELECT MAX(timestamp) FROM market_data")
+	query, err := sql.Query("SELECT MAX(timestamp) FROM market_data WHERE market='" + settings.Market + "'")
 	if err != nil {
 		println(err.Error())
 	}
@@ -377,7 +235,7 @@ func updateMarketHistory(coinbase *coinbasepro.Client) {
 	}
 	timeRemaining := time.Now().Unix() - startTimestmap
 	Println("Currently " + strconv.Itoa(int(timeRemaining)/60) + " entries missing!")
-	updateMarketData("BTC-USD", coinbase, startTimestmap, sql)
+	updateMarketData(settings.Market, coinbase, startTimestmap, sql)
 }
 
 func updateMarketData(market string, coinbase *coinbasepro.Client, timestamp int64, sql *sql.DB) {

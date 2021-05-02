@@ -34,19 +34,19 @@ func readDatabaseConfig() viper.Viper {
 
 func ConnectDB() *sql.DB {
 	dbConfig = readDatabaseConfig()
-	fmt.Print("Attempting to connect to DB,  ")
+	fmt.Print("Connecting to DB...  ")
 	sqlConnection, err := sql.Open("postgres", "postgres://"+dbConfig.GetString("user")+":"+dbConfig.GetString("password")+"@"+dbConfig.GetString("host")+":"+dbConfig.GetString("port")+"/"+dbConfig.GetString("dbName")+"?sslmode=disable")
 	if err != nil {
 		panic(err)
 	}
 	err = sqlConnection.Ping()
 	if err == nil {
-		fmt.Print("Connected")
+		fmt.Print(", Connected!")
 		fmt.Println()
 	} else {
-		fmt.Print("Failed")
+		fmt.Print(", Failed!")
 		fmt.Println()
-		fmt.Println(err.Error())
+		println(err.Error())
 	}
 	return sqlConnection
 }

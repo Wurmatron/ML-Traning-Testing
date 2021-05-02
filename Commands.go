@@ -96,10 +96,9 @@ func startupBot(args []string) {
 	if !(os.IsNotExist(err)) {
 		ConnectDB()
 		commandBot := make(chan string)
-		fmt.Println("Starting Bot...")
 		go startCoinbaseBot(commandBot, BotSettings{
-			Name:                  "Bot",
-			Market:                "XLM-USD",
+			Name:                  "Testing",
+			Market:                "BTC-USD",
 			UpdateTime:            300,
 			MarginSell:            0.01,
 			MarginBuy:             0.01,
