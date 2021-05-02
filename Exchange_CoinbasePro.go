@@ -186,11 +186,11 @@ func startCoinbaseBot(command chan string, settings BotSettings) {
 func updateBid(coinbase *coinbasepro.Client, data MarketData, settings BotSettings) {
 	var market = data.market
 	var coinName = strings.Split(market, "-")[0]
-	var round = getMarketDecimal(coinbase, market)
+	var round = GetMarketDecimal(coinbase, market)
 	var currencyRound = round[0]
 	var coinRound = round[1]
 	var purchaseAmount = calculatePurchaseAmount(coinbase, settings).Round(int32(coinRound))
-	amountOnCurrentMarket, _ := decimal.NewFromString(getCoinAmount(coinbase, coinName))
+	amountOnCurrentMarket, _ := decimal.NewFromString(GetTotalMoney(coinbase, coinName).String())
 	midMarket := getMidMarket(market, coinbase)
 	lastPurchase := getLastPurchase(coinbase, market, "buy")
 	buyPrice := getBuyPrice(purchaseAmount, midMarket, settings, round).Round(int32(currencyRound))
@@ -269,20 +269,7 @@ func getBuyPrice(amount decimal.Decimal, midPrice decimal.Decimal, bot BotSettin
 	return midPrice.Sub(midPrice.Mul(feePerc).Add(midPrice.Mul(decimal.NewFromFloat(bot.MarginSell)))).Mul(amount)
 }
 
-func getCoinAmount(coinbase *coinbasepro.Client, coin string) string {
-	accounts, err := coinbase.GetAccounts()
-	if err != nil {
-		println(err.Error())
-	}
-	for _, a := range accounts {
-		if a.Currency == coin {
-			return a.Balance
-		}
-	}
-	return "0"
-}
-
-func placeOrder(coinbase *coinbasepro.Client, t string, market string, amount decimal.Decimal, price decimal.Decimal) {
+func PlaceOrder(coinbase *coinbasepro.Client, t string, market string, amount decimal.Decimal, price decimal.Decimal) {
 	for _, o := range getActiveOrders(coinbase) { // Check for current orders matching this one
 		if o.ProductID == market {
 			if strings.EqualFold(t, o.Side) {
@@ -317,7 +304,7 @@ func placeOrder(coinbase *coinbasepro.Client, t string, market string, amount de
 	}
 }
 
-func getMarketDecimal(coinbase *coinbasepro.Client, market string) [2]int {
+func GetMarketDecimal(coinbase *coinbasepro.Client, market string) [2]int {
 	products, _ := coinbase.GetProducts()
 	for _, product := range products {
 		if strings.EqualFold(product.ID, market) {
@@ -335,7 +322,7 @@ func calculatePurchaseAmount(coinbase *coinbasepro.Client, settings BotSettings)
 		midPrice := getMidMarket(settings.Market, coinbase)
 		return value.Div(midPrice)
 	} else if strings.EqualFold(settings.AmountCalculationType, "PercCurrency") {
-		total := getTotalMoney(coinbase)
+		total := GetTotalMoney(coinbase, "USD")
 		perc := total.Div(value)
 		midPrice := getMidMarket(settings.Market, coinbase)
 		return perc.Div(midPrice)
@@ -343,7 +330,7 @@ func calculatePurchaseAmount(coinbase *coinbasepro.Client, settings BotSettings)
 	return decimal.NewFromFloat(0)
 }
 
-func getTotalMoney(coinbase *coinbasepro.Client) decimal.Decimal {
+func GetTotalMoney(coinbase *coinbasepro.Client, currencyType string) decimal.Decimal {
 	accounts, err := coinbase.GetAccounts()
 	if err != nil {
 		Println("Failed to connect, Invalid Token's")
@@ -354,7 +341,7 @@ func getTotalMoney(coinbase *coinbasepro.Client) decimal.Decimal {
 				panic(err)
 			}
 			if bal.GreaterThan(decimal.NewFromInt(0)) {
-				if a.ID == "USD" {
+				if a.ID == currencyType {
 					return bal
 				}
 			}

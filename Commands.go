@@ -94,7 +94,9 @@ func startupBot(args []string) {
 	var encryptionDir = BaseDir + "/encryption/coinbase_pro.json"
 	_, err := os.Stat(encryptionDir)
 	if !(os.IsNotExist(err)) {
+		ConnectDB()
 		commandBot := make(chan string)
+		fmt.Println("Starting Bot...")
 		go startCoinbaseBot(commandBot, BotSettings{
 			Name:                  "Bot",
 			Market:                "XLM-USD",
