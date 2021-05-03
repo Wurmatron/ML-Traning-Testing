@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	. "fmt"
+	"github.com/bwmarrin/discordgo"
 	"github.com/preichenberger/go-coinbasepro/v2"
 	cb "github.com/preichenberger/go-coinbasepro/v2"
 	"github.com/shopspring/decimal"
@@ -18,6 +19,17 @@ type Coinbase_Auth struct {
 	passphrase string
 	secretKey  string
 	apiToken   string
+}
+
+type HistoricalEntry struct {
+	exchange        string
+	market          string
+	timestamp       int64
+	lowestPrice     float64
+	highestPrice    float64
+	firstTradePrice float64
+	lastTradePrice  float64
+	volume          float64
 }
 
 var auth Coinbase_Auth
@@ -89,19 +101,21 @@ func connectToCoinbase() *coinbasepro.Client {
 
 func startCoinbaseBot(command chan string, settings BotSettings) {
 	coinbase := connectToCoinbase()
-	updateMarketHistory(coinbase, settings)
+	sql := ConnectDB()
+	discord := StartupDiscordBot()
+	updateMarketHistory(coinbase, settings, sql, discord)
 	Println("Bot Initalization Complete")
-	go run(settings)
+	go run(coinbase, settings, sql, discord)
 }
 
-func getMidMarket(market string, coinbase *coinbasepro.Client) decimal.Decimal {
+func GetMidMarket(market string, coinbase *coinbasepro.Client) decimal.Decimal {
 	ticker, _ := coinbase.GetTicker(market)
 	bidPrice, _ := decimal.NewFromString(ticker.Bid)
 	askPrice, _ := decimal.NewFromString(ticker.Ask)
 	return decimal.Avg(bidPrice, askPrice)
 }
 
-func getActiveOrders(coinbase *coinbasepro.Client) []coinbasepro.Order {
+func GetActiveOrders(coinbase *coinbasepro.Client) []coinbasepro.Order {
 	var orders []coinbasepro.Order
 	cursor := coinbase.ListOrders()
 	for cursor.HasMore {
@@ -117,7 +131,7 @@ func getActiveOrders(coinbase *coinbasepro.Client) []coinbasepro.Order {
 	return orders
 }
 
-func getFills(coinbase *coinbasepro.Client, market string) []coinbasepro.Fill {
+func GetFills(coinbase *coinbasepro.Client, market string) []coinbasepro.Fill {
 	var fills []coinbasepro.Fill
 	cursor := coinbase.ListFills(coinbasepro.ListFillsParams{
 		OrderID:    "",
@@ -137,8 +151,8 @@ func getFills(coinbase *coinbasepro.Client, market string) []coinbasepro.Fill {
 	return fills
 }
 
-func getLastPurchase(coinbase *coinbasepro.Client, market string, t string) coinbasepro.Fill {
-	fills := getFills(coinbase, market)
+func GetLastPurchase(coinbase *coinbasepro.Client, market string, t string) coinbasepro.Fill {
+	fills := GetFills(coinbase, market)
 	for _, fill := range fills {
 		if fill.Side == t {
 			return fill
@@ -148,7 +162,7 @@ func getLastPurchase(coinbase *coinbasepro.Client, market string, t string) coin
 }
 
 func PlaceOrder(coinbase *coinbasepro.Client, t string, market string, amount decimal.Decimal, price decimal.Decimal) {
-	for _, o := range getActiveOrders(coinbase) { // Check for current orders matching this one
+	for _, o := range GetActiveOrders(coinbase) { // Check for current orders matching this one
 		if o.ProductID == market {
 			if strings.EqualFold(t, o.Side) {
 				orderPrice, _ := decimal.NewFromString(o.Price)
@@ -218,9 +232,8 @@ type MarketData struct {
 	sells  map[string]coinbasepro.Message
 }
 
-func updateMarketHistory(coinbase *coinbasepro.Client, settings BotSettings) {
+func updateMarketHistory(coinbase *coinbasepro.Client, settings BotSettings, sql *sql.DB, discord *discordgo.Session) {
 	Println("Updating Market History")
-	sql := ConnectDB()
 	startTimestmap := int64(1420088400) // Jan 1, 2015
 	// Get Latest timestamp and update from there
 	query, err := sql.Query("SELECT MAX(timestamp) FROM market_data WHERE market='" + settings.Market + "'")
@@ -234,7 +247,12 @@ func updateMarketHistory(coinbase *coinbasepro.Client, settings BotSettings) {
 		}
 	}
 	timeRemaining := time.Now().Unix() - startTimestmap
-	Println("Currently " + strconv.Itoa(int(timeRemaining)/60) + " entries missing!")
+	missingEntries := int(timeRemaining) / 60
+	Println("Currently " + strconv.Itoa(missingEntries) + " entries missing!")
+	if missingEntries > 0 {
+		BotLog(discord, "Updating Market Data...")
+		BotLog(discord, "Currently "+strconv.Itoa(missingEntries)+" entries missing!")
+	}
 	updateMarketData(settings.Market, coinbase, startTimestmap, sql)
 }
 
