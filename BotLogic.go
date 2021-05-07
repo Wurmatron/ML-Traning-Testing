@@ -8,36 +8,125 @@ import (
 	"strconv"
 )
 
+// ML Data
+const botCount = 100
+
+var generation = 0
+var bestBot NeuralNet
+var bots []NeuralNet
+var bestFitness = 0.0
+
+// Training data
+const generationTimeframe = 24
+
 func run(coinbase *coinbasepro.Client, settings BotSettings, sql *sql.DB, discord *discordgo.Session) {
 	BotLog(discord, settings.Name+" Bot Starting on '"+settings.Market+"'")
 	Println(settings.Name + " Bot Starting on '" + settings.Market + "'")
-	//startPoint := int64(1437487200)
-	//hourlyPoints := computePoints(sql, startPoint, startPoint + (60 * 60 * 60), settings)
-	//halfDayPoints := computePoints(sql, startPoint, startPoint + (60 * 60 * 60 * 12), settings)
-	//dayPoints := computePoints(sql, startPoint, startPoint + (60 * 60 * 60 * 24), settings)
+	startPoint := getMarketStartingPoint(sql, settings.Market)
+	// Setup ML
+	bots := createRandomBots()
+	for {
+		bots = runGeneration(discord, sql, startPoint, settings, bots)
+		generation++
+	}
+}
 
+func runGeneration(discord *discordgo.Session, sql *sql.DB, start int64, settings BotSettings, bots []NeuralNet) []NeuralNet {
+	history := getHistory(sql, start, start+(60*60*60), settings.Market)
+	hourlyPoints := computePoints(sql, start, start+(60*60*60), settings)
+	// Generation Scoring
+	bestOfGenerationScore := -1000000.0
+	bestGenerationBot := bots[0]
+	generationalAvg := 0.0
+	for _, bot := range bots {
+		botScore := scoreBot(bot, history, hourlyPoints)
+		if botScore > bestOfGenerationScore {
+			bestOfGenerationScore = botScore
+			bestGenerationBot = bot
+		}
+		generationalAvg = generationalAvg + botScore
+	}
+	if bestOfGenerationScore > bestFitness || bestBot.HiddenLayers == nil {
+		bestFitness = bestOfGenerationScore
+		bestBot = bestGenerationBot
+	}
+	generationalAvg = generationalAvg / botCount
+	generationInformational := Sprintf("Generation %s  Gen: %.4f Best: %.4f Avg %.4f \n", strconv.Itoa(generation), bestOfGenerationScore, bestFitness, generationalAvg)
+	BotLog(discord, generationInformational)
+	Printf(generationInformational)
+	bots = createRandomBots()
+	//bots[0] = bestBot
+	return bots
+}
+
+// Score a bot over the given history
+func scoreBot(net NeuralNet, history []HistoricalEntry, scoring []float64) float64 {
+	score := 0.0
+	for index, entry := range history {
+		netOutput := Compute(convertToNeural(entry), net) // 0 Nothing, 1 Buy, 2 Sell
+		marketScore := scoring[index]
+		score = score + computeBotScore(netOutput, marketScore)
+	}
+	return score
+}
+
+// Calculate the score of the bots actions
+func computeBotScore(netOutput []float64, marketScore float64) float64 {
+	score := 0.0
+	score = score - netOutput[0]*marketScore // Chance to be doing nothing
+	if marketScore > .8 {                    // Time to sell
+		score = score + (netOutput[2] * marketScore)
+		score = score - (netOutput[1] * marketScore)
+	} else if marketScore < .2 { // Time to buy
+		score = score + (netOutput[1] * (1 - marketScore))
+		score = score - (netOutput[2] * marketScore)
+	} else { // Should be waiting
+		score = score - (netOutput[1] * marketScore)
+		score = score - (netOutput[2] * marketScore)
+	}
+	return score
+}
+
+// Converts the history into something a neural net can understand, (0 - 1)
+func convertToNeural(entry HistoricalEntry) []float64 {
+	neueral := make([]float64, 13)
+	neueral[0] = sigmoid(entry.firstTradePrice / 10000)
+	neueral[1] = sigmoid(entry.lastTradePrice / 10000)
+	neueral[2] = sigmoid(entry.highestPrice / 10000)
+	neueral[3] = sigmoid(entry.lowestPrice / 10000)
+	neueral[4] = sigmoid(entry.volume / 10000)
+	return neueral
+}
+
+// Creates a fully new set of bots with random values
+func createRandomBots() []NeuralNet {
+	bots := make([]NeuralNet, botCount)
+	for index := 0; index < botCount; index++ {
+		bots[index] = RandomNet(14, 3, []int{12, 12, 12}, 13)
+	}
+	return bots
+}
+
+// Get the earliest point of the markets history, for training
+func getMarketStartingPoint(sql *sql.DB, market string) int64 {
+	query, err := sql.Query("SELECT MIN(timestamp) FROM market_data WHERE market='" + market + "'")
+	if err != nil {
+		println(err.Error())
+	}
+	firstTimestamp := int64(0)
+	if query != nil && query.Next() {
+		err = query.Scan(&firstTimestamp)
+		if err != nil {
+			println(err.Error())
+		}
+	}
+	return firstTimestamp
 }
 
 // Compute the best times to buy / sell based on a given set of start and end points / entries
 func computePoints(sql *sql.DB, startPoint int64, endPoint int64, settings BotSettings) []float64 {
 	increments := (endPoint - startPoint) / 60 // Amount of entries
-	// SELECT * FROM market_data WHERE market='BTC-USD' AND timestamp BETWEEN '1437487200' AND '1437489000';
-	queryRows, err := sql.Query("SELECT * FROM market_data WHERE market='" + settings.Market + "' AND timestamp BETWEEN '" +
-		strconv.FormatInt(startPoint-1, 10) + "' AND '" + strconv.FormatInt(endPoint+1, 10) + "';")
-	if err != nil {
-		println(err.Error())
-		return make([]float64, 0)
-	}
-	// Collect entries from query into array
-	history := make([]HistoricalEntry, 0)
-	for queryRows.Next() {
-		var entry HistoricalEntry
-		if err := queryRows.Scan(&entry.exchange, &entry.market, &entry.timestamp, &entry.lowestPrice, &entry.highestPrice, &entry.firstTradePrice, &entry.lastTradePrice, &entry.volume); err != nil {
-			println(err.Error())
-			return make([]float64, 0)
-		}
-		history = append(history, entry)
-	}
+	history := getHistory(sql, startPoint, endPoint, settings.Market)
 	points := make([]float64, len(history))
 	// Find prices
 	diffIncrement := 1.0 / float64(increments)
@@ -68,6 +157,28 @@ func computePoints(sql *sql.DB, startPoint int64, endPoint int64, settings BotSe
 		currentLowestScore = currentLowestScore + diffIncrement
 	}
 	return points
+}
+
+// Gets the historical data for the given time peroid
+func getHistory(sql *sql.DB, startPoint int64, endPoint int64, market string) []HistoricalEntry {
+	// SELECT * FROM market_data WHERE market='BTC-USD' AND timestamp BETWEEN '1437487200' AND '1437489000';
+	queryRows, err := sql.Query("SELECT * FROM market_data WHERE market='" + market + "' AND timestamp BETWEEN '" +
+		strconv.FormatInt(startPoint-1, 10) + "' AND '" + strconv.FormatInt(endPoint+1, 10) + "';")
+	if err != nil {
+		println(err.Error())
+		return make([]HistoricalEntry, 0)
+	}
+	// Collect entries from query into array
+	history := make([]HistoricalEntry, 0)
+	for queryRows.Next() {
+		var entry HistoricalEntry
+		if err := queryRows.Scan(&entry.exchange, &entry.market, &entry.timestamp, &entry.lowestPrice, &entry.highestPrice, &entry.firstTradePrice, &entry.lastTradePrice, &entry.volume); err != nil {
+			println(err.Error())
+			return make([]HistoricalEntry, 0)
+		}
+		history = append(history, entry)
+	}
+	return history
 }
 
 // Returns the index of the lowest and highest entries [low, high]
