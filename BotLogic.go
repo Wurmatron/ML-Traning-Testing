@@ -34,30 +34,59 @@ func run(coinbase *coinbasepro.Client, settings BotSettings, sql *sql.DB, discor
 }
 
 func runGeneration(discord *discordgo.Session, sql *sql.DB, start int64, settings BotSettings, bots []NeuralNet) []NeuralNet {
+	// Compute Bot Scoring
 	history := getHistory(sql, start, start+(60*60*60), settings.Market)
 	hourlyPoints := computePoints(sql, start, start+(60*60*60), settings)
+	botScores := make([]BotGenerationScore, 0)
+	botChannels := make([]chan BotGenerationScore, len(bots))
+	for x := 0; x < len(botChannels); x++ {
+		botChannels[x] = make(chan BotGenerationScore)
+	}
+	// Start Bot Calculations
+	for index, bot := range bots {
+		go runBotForGeneration(bot, history, hourlyPoints, botChannels[index])
+	}
+	// Collect bot calculations
+	for _, channel := range botChannels {
+		botScore := <-channel
+		botScores = append(botScores, botScore)
+	}
 	// Generation Scoring
 	bestOfGenerationScore := -1000000.0
 	bestGenerationBot := bots[0]
 	generationalAvg := 0.0
-	for _, bot := range bots {
-		botScore := scoreBot(bot, history, hourlyPoints)
-		if botScore > bestOfGenerationScore {
-			bestOfGenerationScore = botScore
-			bestGenerationBot = bot
+	for _, botScore := range botScores {
+		if botScore.score > bestOfGenerationScore {
+			bestOfGenerationScore = botScore.score
+			bestGenerationBot = botScore.Bot
 		}
-		generationalAvg = generationalAvg + botScore
+		generationalAvg = generationalAvg + botScore.score
 	}
+	// Check for best score
 	if bestOfGenerationScore > bestFitness || bestBot.HiddenLayers == nil {
 		bestFitness = bestOfGenerationScore
 		bestBot = bestGenerationBot
 	}
 	generationalAvg = generationalAvg / botCount
-	generationInformational := Sprintf("Generation %s  Gen: %.4f Best: %.4f Avg %.4f \n", strconv.Itoa(generation), bestOfGenerationScore, bestFitness, generationalAvg)
+	// Display Info
+	generationInformational := Sprintf("Generation %s  Gen: %.8f Best: %.8f Avg %.8f \n", strconv.Itoa(generation), bestOfGenerationScore, bestFitness, generationalAvg)
 	BotLog(discord, generationInformational)
 	Printf(generationInformational)
-	bots = createRandomBots()
-	//bots[0] = bestBot
+	// Setup Next Generation
+	topBots := getTop(botScores, botCount/10)
+	newBotsNeeded := botCount - len(topBots) - (botCount / 10)
+	bots = make([]NeuralNet, 0)
+	bots = append(bots, topBots...)
+	// Mutate to fill missing bots
+	for x := 0; x < newBotsNeeded; x++ {
+		rand.Seed(time.Now().UnixNano())
+		randBot := rand.Intn(len(topBots))
+		rand.Seed(time.Now().UnixNano())
+		bots = append(bots, mutate(topBots[randBot], 10+rand.Intn(30)))
+	}
+	for x := 0; x < (botCount / 10); x++ {
+		bots = append(bots, RandomNet(14, 3, []int{12, 12, 12}, 13))
+	}
 	return bots
 }
 
@@ -70,6 +99,14 @@ func scoreBot(net NeuralNet, history []HistoricalEntry, scoring []float64) float
 		score = score + computeBotScore(netOutput, marketScore)
 	}
 	return score
+}
+
+func runBotForGeneration(net NeuralNet, history []HistoricalEntry, scoring []float64, channel chan BotGenerationScore) {
+	score := BotGenerationScore{
+		Bot:   net,
+		score: scoreBot(net, history, scoring),
+	}
+	channel <- score
 }
 
 // Calculate the score of the bots actions
@@ -213,9 +250,9 @@ func findHighAndLow(entries []HistoricalEntry) []int {
 func mutate(net NeuralNet, mutationCount int) NeuralNet {
 	for x := 0; x < mutationCount; x++ {
 		rand.Seed(time.Now().UnixNano())
-		randLayer := rand.Intn(len(net.HiddenLayers) + 1)
+		randLayer := rand.Intn(len(net.HiddenLayers))
 		randNeuron := 0
-		if randLayer > len(net.HiddenLayers) {
+		if randLayer > len(net.HiddenLayers)-1 {
 			rand.Seed(time.Now().UnixNano())
 			randNeuron = rand.Intn(len(net.OutputLayer))
 		} else {
@@ -250,10 +287,28 @@ func mutateNeuron(neuron Neuron) Neuron {
 	} else {
 		weight := rand.Intn(len(neuron.Weights))
 		if addOrSub == 1 {
-			neuron.Weights[weight] += rand.Float64()
+			neuron.Weights[weight] += rand.Float64() * 5
 		} else {
-			neuron.Weights[weight] -= rand.Float64()
+			neuron.Weights[weight] -= rand.Float64() * 5
 		}
 	}
 	return neuron
+}
+
+func getTop(botScores []BotGenerationScore, count int) []NeuralNet {
+	topNets := make([]NeuralNet, 0)
+	for x := 0; x < count; x++ {
+		// Find best bot in current net array
+		bestIndex := 0
+		bestScore := -999999999.0
+		for index := 0; index < len(botScores); index++ {
+			if botScores[index].score > bestScore {
+				bestIndex = index
+				bestScore = botScores[index].score
+			}
+		}
+		botScores[bestIndex].score = -1
+		topNets = append(topNets, botScores[bestIndex].Bot)
+	}
+	return topNets
 }

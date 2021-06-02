@@ -9,3 +9,8 @@ type BotSettings struct {
 	AmountCalculationType string
 	AmountData            string
 }
+
+type BotGenerationScore struct {
+	Bot   NeuralNet
+	score float64
+}
