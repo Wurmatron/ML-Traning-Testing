@@ -5,7 +5,9 @@ import (
 	. "fmt"
 	"github.com/bwmarrin/discordgo"
 	"github.com/preichenberger/go-coinbasepro/v2"
+	"math/rand"
 	"strconv"
+	"time"
 )
 
 // ML Data
@@ -206,4 +208,52 @@ func findHighAndLow(entries []HistoricalEntry) []int {
 	lowHigh[0] = lowestIndex
 	lowHigh[1] = highestIndex
 	return lowHigh
+}
+
+func mutate(net NeuralNet, mutationCount int) NeuralNet {
+	for x := 0; x < mutationCount; x++ {
+		rand.Seed(time.Now().UnixNano())
+		randLayer := rand.Intn(len(net.HiddenLayers) + 1)
+		randNeuron := 0
+		if randLayer > len(net.HiddenLayers) {
+			rand.Seed(time.Now().UnixNano())
+			randNeuron = rand.Intn(len(net.OutputLayer))
+		} else {
+			randNeuron = rand.Intn(len(net.HiddenLayers))
+		}
+		if randLayer > len(net.HiddenLayers) { // Output Layer
+			net.OutputLayer[randNeuron] = mutateNeuron(net.OutputLayer[randNeuron])
+		} else { // Hidden Layers
+			net.HiddenLayers[randLayer][randNeuron] = mutateNeuron(net.HiddenLayers[randLayer][randNeuron])
+		}
+	}
+	return net
+}
+
+func mutateNeuron(neuron Neuron) Neuron {
+	randSel := rand.Intn(3)
+	rand.Seed(time.Now().UnixNano())
+	addOrSub := rand.Intn(1)
+	rand.Seed(time.Now().UnixNano())
+	if randSel == 0 { // Activation
+		if addOrSub == 1 {
+			neuron.Activation += rand.Float64()
+		} else {
+			neuron.Activation -= rand.Float64()
+		}
+	} else if randSel == 1 { // Bias
+		if addOrSub == 1 {
+			neuron.Bias += rand.Float64()
+		} else {
+			neuron.Bias -= rand.Float64()
+		}
+	} else {
+		weight := rand.Intn(len(neuron.Weights))
+		if addOrSub == 1 {
+			neuron.Weights[weight] += rand.Float64()
+		} else {
+			neuron.Weights[weight] -= rand.Float64()
+		}
+	}
+	return neuron
 }
